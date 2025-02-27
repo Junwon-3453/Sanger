@@ -4,30 +4,33 @@ from pathlib import Path
 import pandas as pd
 
 
-def bert_base_gflops(seq_len):
+def bert_base_gflops(seq_len):       
     HIDDEN_SIZE = 768
-    linear_flops = seq_len * HIDDEN_SIZE * HIDDEN_SIZE * 2 * 3
-    qk_flops = seq_len * seq_len * HIDDEN_SIZE * 2
-    pv_flops = seq_len * seq_len * HIDDEN_SIZE * 2
-    out_proj_flops = seq_len * HIDDEN_SIZE * HIDDEN_SIZE * 2
-    stage1_flops = linear_flops
-    stage2_flops = qk_flops + pv_flops + out_proj_flops
-    stage1_gflops = stage1_flops / 1e9
-    stage2_gflops = stage2_flops / 1e9
-    return stage1_gflops, stage2_gflops
+    linear_flops = seq_len * HIDDEN_SIZE * HIDDEN_SIZE * 2 * 3    #3개의 선형 레이어의 연산량 계산
+    qk_flops = seq_len * seq_len * HIDDEN_SIZE * 2                #Q, K의 행렬 곱셈에 따른 연산량
+    pv_flops = seq_len * seq_len * HIDDEN_SIZE * 2                #계산된 어텐션 스코어와 V의 행렬 곱셈에 따른 연산량
+    out_proj_flops = seq_len * HIDDEN_SIZE * HIDDEN_SIZE * 2      #어텐션 결과를 다시 선형 변환하는 연산량
+    stage1_flops = linear_flops                                   #선형 연산과
+    stage2_flops = qk_flops + pv_flops + out_proj_flops           #어텐션 연산 (QK, PV, out projection)
+    stage1_gflops = stage1_flops / 1e9                            #각 연산의 총합으로 나누어 GFLOPS로 변환
+    stage2_gflops = stage2_flops / 1e9                            
+    return stage1_gflops, stage2_gflops                           
+#입력 시퀀스(seq_len)에 따른 BERT-base 모델의 두 단계(stage1, 2)에서 필요한 연산량을 flop 단위로 계산하고, 이를 GFLOPS로 변환
 
 
 def calc_sanger_latency(sparsity, load_balance, seq_len):
-    PE_ARRAY_SIZE = 64 * 16
-    STAGE1_GOPS = PE_ARRAY_SIZE * 1 * 2  # pe-size * 1(GHz) * 2(ops/mac) = 2048
-    stage2_gops = STAGE1_GOPS / sparsity * load_balance
+    PE_ARRAY_SIZE = 64 * 16              #총 1024개의 PE
+    STAGE1_GOPS = PE_ARRAY_SIZE * 1 * 2  # pe-size * 1(GHz) * 2(ops/mac) = 2048[GOPS]
+    stage2_gops = STAGE1_GOPS / sparsity * load_balance      #sparsity와 load_balance(부하 균형)에 따라 조정
     stage1_gflops, stage2_gflops = bert_base_gflops(seq_len)
     stage1_lat = stage1_gflops / STAGE1_GOPS
     stage2_lat = stage2_gflops / stage2_gops
     total_lat = stage1_lat + stage2_lat
     return total_lat
+#HW 상에서 연산 성능(단위:GOPS)을 고려하여, 계산한 연산량을 기반으로 전체 지연 시간을 추정한다.
 
 
+#CSV 파일의 평균값을 사용하여 Sanger 지연을 계산하고 출력
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--sparsity", default=None, type=float, required=False)
