@@ -9,31 +9,41 @@ def calc_sanger_latency(sparsity, load_balance, seq_len):
     # S (original): [seq_len, seq_len]
     # S (after pack & split): [num_subrows, seq_len]
 
+    # 세부 HW 및 전송 모델 고려
     TH, TW = 64, 64  # PE array: TH x TW
-    NUM_PE_PER_ROW = 16
+    NUM_PE_PER_ROW = 16  # 한 줄당 PE 개수
     DATA_TYPE = 2  # 16 bit, 2 Byte
     FREQUENCY = 1e9  # 1G
-    REAL_BANDWIDTH = 128  # 128 GB/s
-
+    REAL_BANDWIDTH = 128  # 128 GB/s _ 실제 메모리 대역폭
+    
     QKV_WIDTH = 768
     num_subrows = sparsity / load_balance / 0.25 * seq_len  # average number of subrows after pack & split
-
-    LINEAR_GOPS = TH * NUM_PE_PER_ROW * 1 * 2  # pe-size * 1(GHz) * 2(ops/mac) = 2048
-    PROJ_GOPS = LINEAR_GOPS / sparsity * load_balance
+    # 0.25는 원래 행에서 non-zero 값들만 추출해 subrow로 구성할 때, 전체 행의 약 25% 정도만 실제로 유의미하게 사용된다는 실험적 관찰
+    # subrows : attention 행렬의 한 행에서, 실제 연산에 유의미한(non-zero) 값들만 따로 묶어서 작은 행(segment)으로 분할한 단위
+    # 실제 hw에서는 packing 회로가 attention mask를 받아서 연속된 non-zero 블록들을 감지하고,
+    # 이를 메모리에 효율적으로 재배치한 뒤 각 블록을 subrow 단위로 처리하도록 구성 (subrow 개수는 sparsity, load balance으로 결정)
+    
+    LINEAR_GOPS = TH * NUM_PE_PER_ROW * 1 * 2  # pe-size * 1(GHz) * 2(ops/mac) = 2048[GOPS]
+    PROJ_GOPS = LINEAR_GOPS / sparsity * load_balance # sparsity와 load balance를 반영하여 조정
+    # Projection 연산 : y=Wx+b (입력 데이터를 선형 변환하는 연산, 행렬 곱셈과 덧셈을 수행하는 기본 연산, W:가중치 행렬)
+    # 이 연산은 Trans~ 같은 모델의 입력 임베딩에서 QKV를 생성하거나, MHA결과를 하나의 출력으로 통합할 때 사용
     
     LAT_linear = seq_len * QKV_WIDTH * QKV_WIDTH * 2 * 3 / 1e9 / LINEAR_GOPS
-    LAT_project = seq_len * QKV_WIDTH * QKV_WIDTH * 2 / 1e9 / PROJ_GOPS
+    LAT_project = seq_len * QKV_WIDTH * QKV_WIDTH * 2 / 1e9 / PROJ_GOPS     
+    # linear : 2는 곱-덧 연산의 FLOP 수, 3은 입력 임베딩을 QKV로 각각 변환하기 때문에 3번의 선형 변환이 수행된다.
+    # project : 단일 projection(output projection, attention 내부의 한 단계)만 수행되므로 *2만 곱해진 것 
 
-    # latency of Q_tile x K_tile
+    
+    # latency of Q_tile x K_tile (Q타일과 K타일 간의 파이프라인 깊이와 관련된 지연)
     LAT_Qt_Kt = QKV_WIDTH + TW  # pipeline depth is QKV_WIDTH , TW is the access skew
 
-    # latency of S_tile x V_tile
+    # latency of S_tile x V_tile (pack & split 후 subrows 개수와 TW를 더한 값, S_tile과 V_tile 연산의 지연)
     LAT_St_Vt = num_subrows + TW  # pipeline depth is QKV_HEIGHT
 
-    # Latency to calculate a THxTW output using QKV
+    # Latency to calculate a THxTW output using QKV (타일 단위의 출력 지연)
     LAT_TH_TW_output_tile = LAT_Qt_Kt + LAT_St_Vt
 
-    # Latency to calculate a THxSEQUENCE_LENGTH output by changing K and V
+    # Latency to calculate a THxSEQUENCE_LENGTH output by changing K and V (전체 시퀀스 길이에 대해 타일 수 만큼 확장)
     LAT_TH_SEQL_output_tile = LAT_TH_TW_output_tile * (seq_len / TW)
 
     # to overlap the latency, we need to read TH+TW data per cycle
@@ -82,3 +92,9 @@ def main():
 if __name__ == "__main__":
     main()
 
+# study
+# Linear 연산 : 일반적인 임의의 선형 변환. 입력 데이터를 다른 차원으로 매핑할 때 쓰이는 기본 연산
+# Projection 연산 : Transformer에서는 입력 임베딩을 QKV로 변환하기 위해 각각 적용하는 선형 변환
+# (attention 계산을 위한 qkv라는 특정 역할로 변환한다는 의미를 강조하기 위해 사용)
+
+    
