@@ -1,4 +1,5 @@
 package pe_row
+// Reconfigurable sparse PE array에서 SDDMM과 SpMM 계산을 수행
 
 import chisel3._
 import chisel3.util._
@@ -7,7 +8,7 @@ import chisel3.experimental.FixedPoint
 
 import exp_unit.ExpUnitFixPoint
 
-object SeqSwitch {
+object SeqSwitch {    // mux 역할
   def apply[T <: Data](sel: UInt, out: T, cases: IndexedSeq[Tuple2[UInt, T]]) {
     var w = when(sel === cases.head._1) {
       out := cases.head._2
@@ -23,7 +24,7 @@ object SeqSwitch {
   }
 }
 
-// Controls:
+// Controls: (제어신호들)
 // c1: input from row / score_exp
 // c2: input from col / 0
 // c3: stage1/stage2
@@ -42,12 +43,12 @@ class PE(
 ) extends Module {
   val fpType = FixedPoint(bits.W, point.BP)
   val io = IO(new Bundle {
-    val row_in = Input(Vec(width, fpType))
-    val col_in = Input(Vec(width, fpType))
-    val o_in = Input(fpType)
-    val o_out = Output(fpType)
-    val score_in = Input(fpType)
-    val score_out = Output(fpType)
+    val row_in = Input(Vec(width, fpType))  //[in] PE에 들어오는 행 데이터 (벡터)
+    val col_in = Input(Vec(width, fpType))  //[in] PE에 들어오는 열 데이터 (벡터)
+    val o_in = Input(fpType)                //[in] 이전 PE로부터 전달받은 출력
+    val o_out = Output(fpType)              //[out] 현재 PE의 출력 (주로 MAC 연산 결과와 버퍼링된 값들을 기반으로 계산)
+    val score_in = Input(fpType)            //[in] 이전 PE로부터 전달받은 score 값
+    val score_out = Output(fpType)          //[out] 현재 PE에서 계산된 score (exp unit의 결과 등)
 
     val c1 = Input(UInt(c1_bits.W))
     val c2 = Input(UInt(c2_bits.W))
@@ -73,7 +74,7 @@ class PE(
   buf_vec(0) := acc
   for (i <- 0 until buf_size) buf_vec(i + 1) := buf(i)
 
-  // MAC
+  // MAC : row_in과 col_in에서 선택된 값을 SeqSwitch를 통해 각각 a와 b에 할당하고, 이 둘을 곱해서 c를 계산
   val a_vec = Wire(Vec(width + 2, fpType))
   for (i <- 0 until width) a_vec(i) := io.row_in(i)
   a_vec(width) := score_exp
